@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Sernicord pre-commit: refuse private Discord data, secrets, and managed clones.
+set -euo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+exec "$ROOT/scripts/secret-scan.sh"

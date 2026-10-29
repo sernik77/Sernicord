@@ -1,0 +1,815 @@
+#!/usr/bin/env bash
+# Sernicord — universal Discord mod sideloader
+# Default: build Vencord (dev) with all Sernicord plugins, inject into an
+# isolated Discord profile, watch, and launch. Never touches system Discord
+# unless you explicitly pass --system (and confirm).
+set -euo pipefail
+
+ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+cd "$ROOT"
+
+VERSION="1.0.0"
+PLUGINS_DIR="$ROOT/plugins"
+CLIENTS_DIR="$ROOT/clients"
+DEFAULT_PROFILE="sernicord"
+DEFAULT_TARGET="vencord"
+DEFAULT_CHANNEL="stable"
+
+# Colors when stdout is a TTY
+if [[ -t 1 ]]; then
+  RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLU=$'\033[34m'
+  MAG=$'\033[35m'; CYN=$'\033[36m'; BLD=$'\033[1m'; RST=$'\033[0m'
+else
+  RED=; GRN=; YLW=; BLU=; MAG=; CYN=; BLD=; RST=
+fi
+
+log()  { printf '%s\n' "$*"; }
+info() { printf '%s==>%s %s\n' "$CYN" "$RST" "$*"; }
+ok()   { printf '%sOK%s  %s\n' "$GRN" "$RST" "$*"; }
+warn() { printf '%s!!%s  %s\n' "$YLW" "$RST" "$*" >&2; }
+die()  { printf '%sXX%s  %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+
+# ---------------------------------------------------------------------------
+# Target registry
+# ---------------------------------------------------------------------------
+target_repo() {
+  case "$1" in
+    vencord)     echo "https://github.com/Vendicated/Vencord.git" ;;
+    equicord)    echo "https://github.com/Equicord/Equicord.git" ;;
+    *) die "Unknown target: $1 (known: vencord, equicord)" ;;
+  esac
+}
+
+target_src() {
+  # Prefer legacy ./vencord path if present, else clients/<name>
+  local name="$1"
+  if [[ -d "$ROOT/$name/.git" || -f "$ROOT/$name/package.json" ]]; then
+    echo "$ROOT/$name"
+  else
+    echo "$CLIENTS_DIR/$name"
+  fi
+}
+
+target_userplugins() {
+  echo "$(target_src "$1")/src/userplugins"
+}
+
+profile_root() {
+  echo "$ROOT/data/profiles/$1"
+}
+
+profile_xdg() {
+  local p
+  p=$(profile_root "$1")
+  echo "$p"
+}
+
+discord_config_for() {
+  # Isolated Discord user-data / config dir for a profile
+  echo "$(profile_root "$1")/config/discord"
+}
+
+# Legacy single-profile layout used by older dev.sh
+legacy_discord_config() {
+  echo "$ROOT/data/config/discord"
+}
+
+resolve_discord_config() {
+  local profile="$1"
+  local legacy
+  legacy=$(legacy_discord_config)
+  if [[ "$profile" == "$DEFAULT_PROFILE" && -x "$legacy/Discord" ]]; then
+    echo "$legacy"
+  else
+    echo "$(discord_config_for "$profile")"
+  fi
+}
+
+bootstrap_bin() {
+  echo "$ROOT/discord-app/Discord/updater_bootstrap"
+}
+
+launcher_bin() {
+  echo "$ROOT/discord-app/Discord/discord"
+}
+
+# ---------------------------------------------------------------------------
+# Usage / help
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+${BLD}Sernicord${RST} v${VERSION} — A Better Vencord+ for devs & serniks
+
+${BLD}Usage:${RST}
+  ./sernicord [command] [options]
+
+${BLD}Commands:${RST}
+  ${GRN}(default)|dev|up${RST}   Build target (dev), sync plugins, inject, watch, launch
+  menu                 Interactive menu
+  setup                Clone target, install deps, fetch Discord bootstrap
+  sync-plugins         Copy plugins/ → <target>/src/userplugins/
+  build [--prod]       Build target (default: --dev)
+  watch                Rebuild on save
+  inject               Inject built mod into the profile's Discord
+  uninject             Remove injection from the profile's Discord
+  launch               Launch isolated Discord for the profile
+  fix                  Re-inject after Discord self-update / broken patch
+  update               git pull target + deps + rebuild + reinject
+  doctor               Check toolchain, paths, injection, privacy fences
+  status               Show profiles, targets, watch/discord PIDs
+  stop                 Stop watch + this profile's Discord
+  profiles             List local profiles
+  clean-build          Remove target dist/ (keeps sources)
+  help                 This help
+
+${BLD}Options:${RST}
+  --target NAME        Mod tree: vencord (default) | equicord
+  --profile NAME       Isolated data profile (default: ${DEFAULT_PROFILE})
+  --channel NAME       Discord channel: stable | ptb | canary (default: stable)
+  --system             DANGEROUS: operate on system Discord (requires confirm)
+  --no-launch          Skip launching Discord (dev/up)
+  --no-watch           Skip starting file watch (dev/up)
+  --prod               Production build instead of --dev
+  -y, --yes            Assume yes for prompts
+
+${BLD}Examples:${RST}
+  ./sernicord                      # full Sernicord dev (default)
+  ./sernicord menu
+  ./sernicord inject --profile alt
+  ./sernicord update --target equicord
+  ./sernicord fix --profile sernicord
+  ./sernicord doctor
+
+${BLD}Privacy:${RST}
+  Profiles live under data/ (gitignored). Never commit data/, discord-app/,
+  client clones, Cookies, Local Storage, or settings backups. Pre-commit
+  hook + scripts/secret-scan.sh enforce this.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Arg parsing
+# ---------------------------------------------------------------------------
+CMD=""
+TARGET="$DEFAULT_TARGET"
+PROFILE="$DEFAULT_PROFILE"
+CHANNEL="$DEFAULT_CHANNEL"
+USE_SYSTEM=0
+NO_LAUNCH=0
+NO_WATCH=0
+PROD=0
+ASSUME_YES=0
+
+parse_args() {
+  local positional=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help|help) CMD=help; shift ;;
+      --target) TARGET="${2:-}"; shift 2 ;;
+      --profile) PROFILE="${2:-}"; shift 2 ;;
+      --channel) CHANNEL="${2:-}"; shift 2 ;;
+      --system) USE_SYSTEM=1; shift ;;
+      --no-launch) NO_LAUNCH=1; shift ;;
+      --no-watch) NO_WATCH=1; shift ;;
+      --prod) PROD=1; shift ;;
+      -y|--yes) ASSUME_YES=1; shift ;;
+      --) shift; break ;;
+      -*)
+        die "Unknown option: $1 (try ./sernicord help)"
+        ;;
+      *)
+        positional+=("$1"); shift ;;
+    esac
+  done
+  if [[ ${#positional[@]} -eq 0 ]]; then
+    CMD="${CMD:-dev}"
+  else
+    CMD="${positional[0]}"
+    # allow: ./sernicord build --prod already handled; leftover positionals ignored
+  fi
+  case "$TARGET" in
+    vencord|equicord) ;;
+    *) die "Unsupported --target '$TARGET' (vencord|equicord)" ;;
+  esac
+  case "$CHANNEL" in
+    stable|ptb|canary) ;;
+    *) die "Unsupported --channel '$CHANNEL' (stable|ptb|canary)" ;;
+  esac
+}
+
+confirm() {
+  local prompt="$1"
+  if (( ASSUME_YES )); then return 0; fi
+  if [[ ! -t 0 ]]; then die "Refusing prompt in non-interactive mode (pass -y)"; fi
+  local ans
+  read -r -p "$prompt [y/N] " ans
+  [[ "$ans" == "y" || "$ans" == "Y" || "$ans" == "yes" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Environment fences
+# ---------------------------------------------------------------------------
+apply_profile_env() {
+  local pdir
+  pdir=$(profile_xdg "$PROFILE")
+  mkdir -p "$pdir/config" "$pdir/share" "$pdir/cache" "$pdir/state"
+  export XDG_CONFIG_HOME="$pdir/config"
+  export XDG_DATA_HOME="$pdir/share"
+  export XDG_CACHE_HOME="$pdir/cache"
+  export XDG_STATE_HOME="$pdir/state"
+  # Prefer legacy layout when it already holds the client for default profile
+  if [[ "$PROFILE" == "$DEFAULT_PROFILE" && -d "$ROOT/data/config" ]]; then
+    export XDG_CONFIG_HOME="$ROOT/data/config"
+    export XDG_DATA_HOME="$ROOT/data/share"
+    export XDG_CACHE_HOME="$ROOT/data/cache"
+    export XDG_STATE_HOME="$ROOT/data/state"
+    mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+  fi
+}
+
+discord_config() {
+  if (( USE_SYSTEM )); then
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/discord"
+  else
+    resolve_discord_config "$PROFILE"
+  fi
+}
+
+watch_pid_file() {
+  echo "$ROOT/data/watch-${TARGET}-${PROFILE}.pid"
+}
+
+watch_log_file() {
+  echo "$ROOT/data/watch-${TARGET}-${PROFILE}.log"
+}
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+ensure_toolchain() {
+  need git
+  need node
+  need pnpm
+  local major
+  major=$(node -p "process.versions.node.split('.')[0]")
+  if (( major < 18 )); then
+    die "Node >= 18 required (found $(node -v))"
+  fi
+}
+
+ensure_target_clone() {
+  local src repo
+  src=$(target_src "$TARGET")
+  repo=$(target_repo "$TARGET")
+  if [[ -f "$src/package.json" ]]; then
+    ok "Target present: $src"
+    return 0
+  fi
+  info "Cloning $TARGET → $src"
+  mkdir -p "$(dirname "$src")"
+  git clone --depth 1 "$repo" "$src"
+  ok "Cloned $TARGET"
+}
+
+ensure_deps() {
+  local src
+  src=$(target_src "$TARGET")
+  if [[ ! -d "$src/node_modules" ]]; then
+    info "Installing $TARGET dependencies (pnpm)..."
+    (cd "$src" && pnpm install --frozen-lockfile || pnpm install)
+  fi
+}
+
+ensure_discord_bootstrap() {
+  local boot launch
+  boot=$(bootstrap_bin)
+  launch=$(launcher_bin)
+  if [[ -x "$boot" && -x "$launch" ]]; then
+    return 0
+  fi
+  warn "Discord bootstrap missing at discord-app/Discord/"
+  info "Fetching official Linux Discord ${CHANNEL} bootstrap via Vencord installer helpers is preferred."
+  info "Place updater_bootstrap + discord launcher under discord-app/Discord/ or re-run setup after adding them."
+  if [[ ! -x "$boot" ]]; then
+    die "Missing bootstrap: $boot"
+  fi
+}
+
+ensure_client() {
+  local cfg boot
+  cfg=$(discord_config)
+  mkdir -p "$cfg"
+  if [[ -x "$cfg/Discord" ]]; then
+    return 0
+  fi
+  (( USE_SYSTEM )) && die "--system set but no Discord binary under $cfg"
+  ensure_discord_bootstrap
+  boot=$(bootstrap_bin)
+  info "Downloading standalone Discord ($CHANNEL) into $cfg"
+  "$boot" --no-zenity "$cfg" "$CHANNEL" "https://updates.discord.com/"
+  ok "Discord client ready"
+}
+
+skip_host_update() {
+  local cfg path
+  cfg=$(discord_config)
+  path="$cfg/settings.json"
+  python3 - "$path" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+if not isinstance(data, dict):
+    data = {}
+data["SKIP_HOST_UPDATE"] = True
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+clear_stale_singleton() {
+  local cfg lock target pid
+  cfg=$(discord_config)
+  lock="$cfg/SingletonLock"
+  [[ -L "$lock" ]] || return 0
+  target=$(readlink "$lock" || true)
+  pid=${target##*-}
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$cfg/SingletonLock" "$cfg/SingletonCookie" "$cfg/SingletonSocket"
+  fi
+}
+
+newest_app() {
+  local cfg
+  cfg=$(discord_config)
+  find "$cfg" -maxdepth 1 -type d -name 'app-*' 2>/dev/null | sort -V | tail -n 1
+}
+
+is_patched() {
+  local app
+  app=$(newest_app || true)
+  [[ -n "${app:-}" && -f "$app/resources/_app.asar" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Plugin sync
+# ---------------------------------------------------------------------------
+sync_plugins() {
+  local dest src
+  src=$(target_src "$TARGET")
+  dest=$(target_userplugins "$TARGET")
+  [[ -d "$PLUGINS_DIR" ]] || die "No plugins/ directory at $PLUGINS_DIR"
+  [[ -d "$src" ]] || die "Target not cloned: $src (run: ./sernicord setup)"
+  mkdir -p "$dest"
+  info "Syncing plugins/ → $dest"
+  # Copy each plugin dir; do not delete unknown userplugins the user may have added locally
+  local count=0
+  local d name
+  for d in "$PLUGINS_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    name=$(basename "$d")
+    [[ "$name" == .* ]] && continue
+    rsync -a --delete "$d" "$dest/$name/"
+    count=$((count + 1))
+    ok "  $name"
+  done
+  if (( count == 0 )); then
+    warn "No plugins found under plugins/"
+  else
+    ok "Synced $count plugin(s)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Build / inject / watch
+# ---------------------------------------------------------------------------
+build_target() {
+  local src args=(build)
+  src=$(target_src "$TARGET")
+  ensure_deps
+  sync_plugins
+  if (( PROD )); then
+    info "Building $TARGET (production)..."
+  else
+    info "Building $TARGET (dev)..."
+    args+=(--dev)
+  fi
+  (cd "$src" && pnpm "${args[@]}")
+  ok "Build finished"
+}
+
+inject_target() {
+  local src cfg
+  src=$(target_src "$TARGET")
+  cfg=$(discord_config)
+  if (( USE_SYSTEM )); then
+    warn "About to inject into SYSTEM Discord at: $cfg"
+    confirm "Type confirm by answering yes — inject system Discord?" || die "Aborted"
+  fi
+  ensure_deps
+  ensure_client
+  if [[ ! -f "$src/dist/patcher.js" ]]; then
+    build_target
+  else
+    sync_plugins
+  fi
+  info "Injecting $TARGET into $cfg"
+  # Call installer directly so --location is honored (pnpm inject inserts a stray --)
+  if [[ -f "$src/scripts/runInstaller.mjs" ]]; then
+    (cd "$src" && node scripts/runInstaller.mjs -- --install --location "$cfg")
+  else
+    (cd "$src" && pnpm inject -- --location "$cfg") || \
+      die "Injector failed. Try: ./sernicord doctor"
+  fi
+  ok "Injected"
+}
+
+uninject_target() {
+  local src cfg
+  src=$(target_src "$TARGET")
+  cfg=$(discord_config)
+  if (( USE_SYSTEM )); then
+    warn "About to uninject SYSTEM Discord at: $cfg"
+    confirm "Uninject system Discord?" || die "Aborted"
+  fi
+  ensure_deps
+  info "Uninjecting $TARGET from $cfg"
+  if [[ -f "$src/scripts/runInstaller.mjs" ]]; then
+    (cd "$src" && node scripts/runInstaller.mjs -- --uninstall --location "$cfg")
+  else
+    (cd "$src" && pnpm uninject -- --location "$cfg") || true
+  fi
+  ok "Uninjected"
+}
+
+watch_running() {
+  local f pid
+  f=$(watch_pid_file)
+  [[ -f "$f" ]] || return 1
+  pid=$(cat "$f" 2>/dev/null || true)
+  [[ -n "${pid:-}" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+start_watch() {
+  local src f log
+  src=$(target_src "$TARGET")
+  f=$(watch_pid_file)
+  log=$(watch_log_file)
+  mkdir -p "$(dirname "$f")"
+  if watch_running; then
+    ok "Watch already running (pid $(cat "$f")). Log: $log"
+    return 0
+  fi
+  ensure_deps
+  sync_plugins
+  info "Starting pnpm watch → $log"
+  (
+    cd "$src"
+    nohup pnpm watch >> "$log" 2>&1 < /dev/null &
+    echo $! > "$f"
+  )
+  ok "Watch pid $(cat "$f")"
+}
+
+stop_all() {
+  local f pid cfg
+  f=$(watch_pid_file)
+  if watch_running; then
+    pid=$(cat "$f")
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
+    rm -f "$f"
+    ok "Watch stopped"
+  else
+    rm -f "$f" 2>/dev/null || true
+    info "Watch not running"
+  fi
+  cfg=$(discord_config)
+  if pgrep -f "$cfg" >/dev/null 2>&1; then
+    pkill -f "$cfg" || true
+    ok "Stopped Discord for profile '$PROFILE'"
+  else
+    info "No Discord process matched profile '$PROFILE'"
+  fi
+}
+
+launch_discord() {
+  local launch cfg
+  apply_profile_env
+  ensure_client
+  skip_host_update
+  clear_stale_singleton
+  if ! is_patched; then
+    inject_target
+  fi
+  if (( USE_SYSTEM )); then
+    die "Refusing to exec system Discord via sideloader launcher. Start your normal Discord after inject."
+  fi
+  launch=$(launcher_bin)
+  cfg=$(discord_config)
+  [[ -x "$launch" ]] || die "Missing launcher: $launch"
+  info "Launching isolated Discord"
+  info "Profile: $PROFILE"
+  info "Config:  $cfg"
+  exec "$launch"
+}
+
+# ---------------------------------------------------------------------------
+# Higher-level commands
+# ---------------------------------------------------------------------------
+cmd_setup() {
+  ensure_toolchain
+  ensure_target_clone
+  ensure_deps
+  sync_plugins
+  mkdir -p "$ROOT/data" "$ROOT/discord-app" "$CLIENTS_DIR"
+  if [[ ! -x "$(bootstrap_bin)" ]]; then
+    warn "discord-app bootstrap not present yet — add official Linux Discord files under discord-app/Discord/"
+    warn "or copy them from an existing Sernicord checkout. setup continues."
+  else
+    ensure_client
+  fi
+  ok "Setup complete for target=$TARGET profile=$PROFILE"
+}
+
+cmd_dev() {
+  ensure_toolchain
+  apply_profile_env
+  ensure_target_clone
+  ensure_deps
+  sync_plugins
+  if [[ ! -f "$(target_src "$TARGET")/dist/patcher.js" ]] || (( PROD )); then
+    build_target
+  else
+    info "dist/ present — skipping full rebuild (run ./sernicord build to force)"
+  fi
+  ensure_client
+  if ! is_patched; then
+    inject_target
+  fi
+  if (( ! NO_WATCH )); then
+    start_watch
+  fi
+  if (( NO_LAUNCH )); then
+    ok "Ready (no launch). Edit plugins/, then Ctrl+R in Discord."
+    return 0
+  fi
+  launch_discord
+}
+
+cmd_update() {
+  local src
+  ensure_toolchain
+  ensure_target_clone
+  src=$(target_src "$TARGET")
+  info "Updating $TARGET (git pull)..."
+  (cd "$src" && git pull --ff-only || git pull --rebase || warn "git pull had issues — continuing")
+  (cd "$src" && pnpm install)
+  sync_plugins
+  build_target
+  inject_target
+  ok "Updated + reinjected"
+}
+
+cmd_fix() {
+  info "Fix: rebuild plugins sync + reinject (post Discord update)"
+  ensure_toolchain
+  apply_profile_env
+  ensure_target_clone
+  ensure_deps
+  sync_plugins
+  build_target
+  inject_target
+  ok "Fixed. Restart Discord or ./sernicord launch"
+}
+
+cmd_doctor() {
+  local src cfg app issues=0
+  printf '%s\n' "${BLD}Sernicord doctor${RST}"
+  printf '  root:    %s\n' "$ROOT"
+  printf '  target:  %s\n' "$TARGET"
+  printf '  profile: %s\n' "$PROFILE"
+  printf '  channel: %s\n' "$CHANNEL"
+  printf '  system:  %s\n' "$( ((USE_SYSTEM)) && echo YES || echo no )"
+  echo
+
+  for c in git node pnpm rsync python3; do
+    if command -v "$c" >/dev/null 2>&1; then
+      ok "tool $c = $(command -v "$c")"
+    else
+      warn "missing tool: $c"
+      issues=$((issues + 1))
+    fi
+  done
+
+  src=$(target_src "$TARGET")
+  if [[ -f "$src/package.json" ]]; then
+    ok "target source $src"
+  else
+    warn "target missing — run ./sernicord setup"
+    issues=$((issues + 1))
+  fi
+  if [[ -d "$src/node_modules" ]]; then ok "node_modules present"; else warn "no node_modules"; issues=$((issues+1)); fi
+  if [[ -f "$src/dist/patcher.js" ]]; then ok "dist/patcher.js present"; else warn "no dist — run build"; issues=$((issues+1)); fi
+
+  local plug_count=0
+  for d in "$PLUGINS_DIR"/*/; do [[ -d "$d" ]] && plug_count=$((plug_count+1)); done
+  ok "publishable plugins: $plug_count (plugins/)"
+
+  cfg=$(discord_config)
+  printf '  discord config: %s\n' "$cfg"
+  if [[ -d "$cfg" ]]; then ok "config dir exists"; else warn "config dir missing"; issues=$((issues+1)); fi
+  if is_patched; then
+    app=$(newest_app)
+    ok "patched: $app"
+  else
+    warn "not patched — run ./sernicord inject"
+    issues=$((issues + 1))
+  fi
+
+  if [[ -x "$(bootstrap_bin)" ]]; then ok "bootstrap ok"; else warn "bootstrap missing"; issues=$((issues+1)); fi
+  if [[ -x "$(launcher_bin)" ]]; then ok "launcher ok"; else warn "launcher missing"; issues=$((issues+1)); fi
+
+  echo
+  info "Privacy fence"
+  if [[ -f "$ROOT/.gitignore" ]] && grep -q '^/data/' "$ROOT/.gitignore"; then
+    ok ".gitignore fences data/"
+  else
+    warn ".gitignore missing data/ fence"
+    issues=$((issues + 1))
+  fi
+  if [[ -x "$ROOT/scripts/secret-scan.sh" ]]; then
+    ok "secret-scan.sh present"
+  else
+    warn "secret-scan.sh missing"
+    issues=$((issues + 1))
+  fi
+  local hooks
+  hooks=$(git -C "$ROOT" config --get core.hooksPath 2>/dev/null || true)
+  if [[ "$hooks" == ".githooks" ]]; then
+    ok "core.hooksPath=.githooks"
+  else
+    warn "git hooks not installed (run: git config core.hooksPath .githooks)"
+    issues=$((issues + 1))
+  fi
+
+  # Spot-check that data is not tracked
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$ROOT" ls-files --error-unmatch data >/dev/null 2>&1; then
+      warn "data/ appears tracked by git — UNSAFE"
+      issues=$((issues + 1))
+    else
+      ok "data/ not tracked"
+    fi
+  fi
+
+  echo
+  if (( issues )); then
+    warn "Doctor found $issues issue(s)"
+    return 1
+  fi
+  ok "All checks passed"
+}
+
+cmd_status() {
+  local src cfg f
+  src=$(target_src "$TARGET")
+  cfg=$(discord_config)
+  f=$(watch_pid_file)
+  echo "${BLD}Sernicord status${RST}"
+  echo "  target:  $TARGET @ $src"
+  echo "  profile: $PROFILE"
+  echo "  config:  $cfg"
+  if watch_running; then
+    echo "  watch:   running pid $(cat "$f")"
+  else
+    echo "  watch:   stopped"
+  fi
+  if is_patched; then
+    echo "  patch:   $(newest_app)"
+  else
+    echo "  patch:   none"
+  fi
+  if pgrep -f "$cfg" >/dev/null 2>&1; then
+    echo "  discord: running"
+  else
+    echo "  discord: stopped"
+  fi
+  echo
+  echo "Profiles under data/profiles/:"
+  if [[ -d "$ROOT/data/profiles" ]]; then
+    find "$ROOT/data/profiles" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' 2>/dev/null || true
+  fi
+  if [[ -d "$ROOT/data/config/discord" ]]; then
+    echo "  (legacy default layout: data/config/discord)"
+  fi
+  echo
+  echo "Plugins:"
+  for d in "$PLUGINS_DIR"/*/; do
+    [[ -d "$d" ]] && echo "  - $(basename "$d")"
+  done
+}
+
+cmd_profiles() {
+  echo "Available / known profiles:"
+  echo "  * $DEFAULT_PROFILE (default)"
+  if [[ -d "$ROOT/data/profiles" ]]; then
+    find "$ROOT/data/profiles" -mindepth 1 -maxdepth 1 -type d -printf '  - %f\n' 2>/dev/null || true
+  fi
+  if [[ -d "$ROOT/data/config/discord" ]]; then
+    echo "  - legacy data/config/discord (mapped to default profile when present)"
+  fi
+}
+
+cmd_clean_build() {
+  local src
+  src=$(target_src "$TARGET")
+  rm -rf "$src/dist"
+  ok "Removed $src/dist"
+}
+
+cmd_menu() {
+  ensure_toolchain
+  if [[ ! -t 0 ]]; then die "menu requires an interactive terminal"; fi
+  while true; do
+    cat <<EOF
+
+${BLD}${MAG}Sernicord${RST}  target=${CYN}$TARGET${RST}  profile=${CYN}$PROFILE${RST}  channel=${CYN}$CHANNEL${RST}
+  1) Dev (build+inject+watch+launch)     7) Fix / reinject
+  2) Setup                               8) Update target
+  3) Sync plugins                        9) Doctor
+  4) Build                               10) Status
+  5) Inject                              11) Stop
+  6) Launch                              12) Switch target/profile
+  0) Quit
+EOF
+    local choice
+    read -r -p "Choice: " choice
+    case "$choice" in
+      1) cmd_dev || true; break ;;
+      2) cmd_setup || true ;;
+      3) sync_plugins || true ;;
+      4) build_target || true ;;
+      5) inject_target || true ;;
+      6) launch_discord || true; break ;;
+      7) cmd_fix || true ;;
+      8) cmd_update || true ;;
+      9) cmd_doctor || true ;;
+      10) cmd_status || true ;;
+      11) stop_all || true ;;
+      12)
+        read -r -p "Target [vencord/equicord] ($TARGET): " t
+        read -r -p "Profile ($PROFILE): " p
+        read -r -p "Channel [stable/ptb/canary] ($CHANNEL): " c
+        [[ -n "${t:-}" ]] && TARGET="$t"
+        [[ -n "${p:-}" ]] && PROFILE="$p"
+        [[ -n "${c:-}" ]] && CHANNEL="$c"
+        ;;
+      0|q|Q) exit 0 ;;
+      *) warn "Unknown choice" ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+  parse_args "$@"
+  mkdir -p "$ROOT/data" "$CLIENTS_DIR"
+
+  case "$CMD" in
+    help) usage ;;
+    menu) cmd_menu ;;
+    setup) cmd_setup ;;
+    sync-plugins|sync) sync_plugins ;;
+    build) ensure_toolchain; ensure_target_clone; build_target ;;
+    watch) ensure_toolchain; ensure_target_clone; apply_profile_env; start_watch ;;
+    inject) ensure_toolchain; apply_profile_env; ensure_target_clone; inject_target ;;
+    uninject) ensure_toolchain; apply_profile_env; ensure_target_clone; uninject_target ;;
+    launch) ensure_toolchain; apply_profile_env; launch_discord ;;
+    fix) cmd_fix ;;
+    update) cmd_update ;;
+    doctor) cmd_doctor ;;
+    status) cmd_status ;;
+    stop) stop_all ;;
+    profiles) cmd_profiles ;;
+    clean-build) cmd_clean_build ;;
+    dev|up|start|"") cmd_dev ;;
+    *)
+      usage
+      die "Unknown command: $CMD"
+      ;;
+  esac
+}
+
+main "$@"

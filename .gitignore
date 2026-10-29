@@ -1,0 +1,132 @@
+# =============================================================================
+# Sernicord fortress gitignore
+# Never publish Discord profiles, sessions, tokens, caches, or local clients.
+# =============================================================================
+
+# --- Runtime / private profile data (logged-in Discord, browser, XDG) --------
+/data/
+data/
+**/SingletonLock
+**/SingletonCookie
+**/SingletonSocket
+**/Cookies
+**/Cookies-journal
+**/Local Storage/
+**/Session Storage/
+**/IndexedDB/
+**/Service Worker/
+**/Cache/
+**/Code Cache/
+**/GPUCache/
+**/DawnCache/
+**/blob_storage/
+**/WebStorage/
+**/Trust Tokens*
+**/Network Persistent State
+**/TransportSecurity
+**/Preferences
+**/Secure Preferences
+**/Login Data*
+**/History*
+**/Web Data*
+**/*LevelDB*/
+**/*.leveldb*
+
+# Discord / Chromium app dirs downloaded into the workspace
+/discord-app/
+discord-app/
+**/app-*/
+
+# Local settings backups & live Vencord settings (plugin state, cloud sync)
+vencord-settings-backup*.json
+*-settings-backup*.json
+**/Vencord/settings/
+**/Equicord/settings/
+native-settings.json
+settings.json
+!configs/**/settings.example.json
+
+# --- Managed clones / build artifacts (sideloader owns these) ----------------
+/vencord/
+/equicord/
+/vesktop/
+/betterdiscord/
+/clients/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+ExtensionCache/
+*.tsbuildinfo
+.pnpm-store/
+.pnpm-debug.log*
+
+# --- Secrets / credentials / keys -------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+id_rsa*
+id_ed25519*
+*.keystore
+credentials.json
+**/secrets/
+**/private/
+*token*
+!*token*/**
+!*Token*/**
+!*Ringtone*
+!*ringtone*
+auth.json
+.npmrc
+.yarnrc.yml
+
+# --- Logs / PIDs / local tool state -----------------------------------------
+*.log
+*.pid
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.watchmanconfig
+
+# --- OS / editor junk -------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# --- Archives / dumps accidentally dropped in the tree ----------------------
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+*.asar
+*.asar.unpacked/
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.exe
+*.msi
+
+# --- Misc local-only --------------------------------------------------------
+.cache/
+tmp/
+temp/
+.local/
+*.bak
+*.orig
+*.tmp
+.sernicord.local
+sernicord.local.conf

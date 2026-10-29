@@ -1,0 +1,15 @@
+{
+  "autoUpdate": false,
+  "autoUpdateNotification": false,
+  "useQuickCss": true,
+  "enableReactDevtools": true,
+  "plugins": {
+    "HelloDev": {
+      "enabled": true
+    },
+    "LocalArchive": {
+      "enabled": false
+    }
+  },
+  "_comment": "Example only. Never commit real settings.json from data/."
+}
