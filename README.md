@@ -96,10 +96,19 @@ Fences:
 
 Ship plugins in `plugins/<PluginName>/`. The sideloader syncs them into the active target before every build/watch/inject.
 
-Bundled starters:
+Bundled plugins:
 
-- `helloDev` — minimal reload-friendly stub
-- `localArchive` — local channel/DM archive tooling
+| Plugin | Role |
+| --- | --- |
+| `helloDev` | Minimal reload stub |
+| `localArchive` | Local archives |
+| `secureChat` | E2E-ish chat encrypt/decrypt (shared passphrase) |
+| `omniSearch` | Universal in-client search (`/omnisearch`) |
+| `profileVault` | Favorite settings/plugins/themes profiles |
+| `botLens` | Bot-token API browser GUI (no user-session swap) |
+| `embedForge` | Custom embeds / interactive link buttons |
+| `secretSentinel` | Pattern watcher; alerts stored locally |
+| `megaDrop` | Large files via bashupload or chunk threads |
 
 Upstream Vencord gitignores `src/userplugins`; Sernicord keeps the publishable copies here instead.
 
