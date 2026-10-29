@@ -1,4 +1,7 @@
 # Sernicord ~ A Better Vencord+ for devs & serniks
+> <img width="300" height="501" alt="image" src="https://github.com/user-attachments/assets/f260d09d-a7bc-4b4a-8311-1f13f375f83e" />
+> <img width="500" height="501" alt="image" src="https://github.com/user-attachments/assets/dc16b379-6518-4e3a-b002-7acf4d79b31a" />
+
 
 Isolated Discord mod workspace with a universal sideloader. Default mode builds **Vencord (dev)** with every plugin under `plugins/`, injects into a **local** Discord profile, watches for changes, and launches.
 
