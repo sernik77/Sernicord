@@ -1,7 +1,7 @@
 # Sernicord ~ A Better Vencord+ for devs & serniks
-> <img width="300" height="501" alt="image" src="https://github.com/user-attachments/assets/f260d09d-a7bc-4b4a-8311-1f13f375f83e" />
-> <img width="500" height="501" alt="image" src="https://github.com/user-attachments/assets/dc16b379-6518-4e3a-b002-7acf4d79b31a" />
 
+### Example modules:
+<img width="943" height="646" alt="image" src="https://github.com/user-attachments/assets/cc3c1152-ce0f-4dec-a938-adbd3f7b8cb9" />
 
 Isolated Discord mod workspace with a universal sideloader. Default mode builds **Vencord (dev)** with every plugin under `plugins/`, injects into a **local** Discord profile, watches for changes, and launches.
 
@@ -125,3 +125,9 @@ Upstream Vencord gitignores `src/userplugins`; Sernicord keeps the publishable c
 ## License
 
 Sideloader and Sernicord packaging: use under the same spirit as Vencord — plugin code follows **GPL-3.0-or-later** (see each plugin / upstream Vencord). Upstream Vencord remains Vendicated’s project; Sernicord is a workspace + tooling layer on top.
+
+---
+
+> <img width="300" height="501" alt="image" src="https://github.com/user-attachments/assets/f260d09d-a7bc-4b4a-8311-1f13f375f83e" />
+> <img width="500" height="501" alt="image" src="https://github.com/user-attachments/assets/dc16b379-6518-4e3a-b002-7acf4d79b31a" />
+
